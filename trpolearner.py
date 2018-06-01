@@ -3,6 +3,7 @@ from torch.nn.utils import vector_to_parameters, parameters_to_vector
 from models import ValueFunctionWrapper
 from utils import *
 import copy
+import collections
 
 eps = 1e-8
 
@@ -100,6 +101,7 @@ class TRPOLearner:
         self.actions = Variable(paths[self.orderings['actions']])
         self.returns = Variable(paths[self.orderings['returns']])
         self.advantages = paths[self.orderings['advantages']]
+
         print(episodes_rewards)
         if episodes_rewards[0] == 0:
             episoderewards = 0
@@ -119,6 +121,10 @@ class TRPOLearner:
         # Use conjugate gradient algorithm to determine the step direction in theta space
         step_direction = self.conjugate_gradient(-policy_gradient)
 
+        old_model = copy.deepcopy(self.policy_net)
+        old_model.load_state_dict(self.policy_net.state_dict())
+        kl_before = self.mean_kl_divergence(old_model).data[0]
+
         # Do line search to determine the stepsize of theta in the direction of step_direction
         shs = .5 * step_direction.dot(self.hessian_vector_product(step_direction))
         lm = np.sqrt(shs / self.args.max_kl)
@@ -129,27 +135,26 @@ class TRPOLearner:
         # Fit the estimated value function to the actual observed discounted rewards
         self.value_net.zero_grad()
         value_fn_params = parameters_to_vector(self.value_net.parameters())
-        self.value_net.fit(self.features_tensor, self.returns)
+        loss = self.value_net.fit(self.features_tensor, self.returns)
 
         # Update parameters of policy model
-        old_model = copy.deepcopy(self.policy_net)
-        old_model.load_state_dict(self.policy_net.state_dict())
+
         if any(np.isnan(theta.data.numpy())):
             print("NaN detected. Skipping update...")
         else:
             vector_to_parameters(theta, self.policy_net.parameters())
 
+        assert(old_model.parameters() != self.policy_net.parameters())
+
         kl_after = self.mean_kl_divergence(old_model).data[0]
         surrogate_after = self.surrogate_loss(parameters_to_vector(self.policy_net.parameters()))
 
+
         stats = {}
-        print(type(kl_after.data.numpy()))
         stats["Avg_Reward"] = episoderewards
         stats["Timesteps"] = paths[0].size()[0]
         stats["Episodes"] = int(episodes_rewards[0])
-        tmp = float(kl_after.data.numpy())
-        print(tmp)
-        stats["Delta_KL"] = tmp
+        stats['Delta_KL'] = float(kl_after.data.numpy())
         stats["Surrogate loss"] = float(surrogate_after.data.numpy())
         print(stats)
         return stats, self.get_policy_weights(), self.get_value_function_weights()

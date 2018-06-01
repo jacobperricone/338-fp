@@ -7,7 +7,9 @@ from utils import *
 import argparse
 import time
 import logging
+import shutil
 import json
+import itertools
 import sys
 import os
 from mpi4py import MPI
@@ -26,13 +28,14 @@ parser = argparse.ArgumentParser(description='TRPO.')
 parser.add_argument("--task", type=str, default='Breakout-ram-v0')
 parser.add_argument("--timesteps_per_batch", type=int, default=10000)
 parser.add_argument("--n_steps", type=int, default=1000000000)
-parser.add_argument("--n_iter", type=int, default=100)
+parser.add_argument("--n_iter", type=int, default=250)
 parser.add_argument("--gamma", type=float, default=.995)
-parser.add_argument("--max_kl", type=float, default=.01)
-parser.add_argument("--cg_damping", type=float, default=0.1)
+parser.add_argument("--max_kl", type=float, default=.1)
+parser.add_argument("--cg_damping", type=float, default=1)
 parser.add_argument("--lam", type=float, default=0.97)
 parser.add_argument("--rollout_limit", type=str, default="episodes") # timesteps, episodes
-parser.add_argument("--value_function_lr", type=float, default=0.001)
+parser.add_argument("--value_function_lr", type=float, default=1)
+parser.add_argument("--plot", type=bool, default=False)
 
 args = parser.parse_args()
 args.max_pathlength = gym.spec(args.task).timestep_limit
@@ -41,10 +44,14 @@ if (not args.timesteps_per_batch % comm.Get_size() == 0) and args.rollout_limit 
     print("*** Error: timesteps_per_batch must be divisible by number of processes when using equal timestep rollout")
 
 env = gym.make(args.task)
+mondir = os.getcwd() + ".dir"
+if os.path.exists(mondir): shutil.rmtree(mondir)
+os.mkdir(mondir)
+
+
 n_extra_features = 1    # Add 1 for scaled timestep!
 policy_model = DQNSoftmax(env.observation_space.shape[0], env.action_space.n)
 value_function_model = DQNRegressor(env.observation_space.shape[0] + n_extra_features)
-
 actor = TRPOActor(args, env, policy_model, value_function_model)
 if rank == 0:
     learner = TRPOLearner(args, env, policy_model, value_function_model, actor.column_headings)
@@ -55,6 +62,8 @@ if rank == 0:
     print("Args: {}".format(args))
     sys.stdout.flush()
 else:
+
+
     dummy_learner = TRPOLearner(args, env, policy_model, value_function_model, actor.column_headings)
     new_policy_weights = dummy_learner.get_policy_weights()
     new_value_function_weights = dummy_learner.get_value_function_weights()
@@ -77,6 +86,7 @@ is_done = 0
 start_time = time.time()
 
 while is_done == 0:
+    seed_iter = itertools.count()
     iteration += 1
 
     # synchronize policy and vf model parameters and update actor weights locally
@@ -89,7 +99,7 @@ while is_done == 0:
 
     # start worker processes collect experience for a minimum args.timesteps_per_batch timesteps
     rollout_start = time.time()
-    data_paths, data_grads, data_rewards = actor.rollouts(args.timesteps_per_batch / comm.Get_size())
+    data_paths, data_grads, data_rewards = actor.rollouts(args.timesteps_per_batch / comm.Get_size(), seed_iter)
     rollout_time = (time.time() - rollout_start)
 
     # gathering of experience on root process
@@ -98,6 +108,8 @@ while is_done == 0:
     gather_time = (time.time() - gather_start)
 
     # only master process does learning
+
+
     if rank == 0:
         # learning step
         learn_start = time.time()
@@ -108,7 +120,7 @@ while is_done == 0:
         print(("\n-------- Iteration %d ----------" % iteration))
         print(("Reward Statistics:"))
         for k, v in stats.items():
-            print("\t{} = {:.2e}".format(k,v))
+            print("\t{} = {}".format(k,v))
         print(("Timing Statistics:"))
         print(("\tBroadcast time = %.3f s" % bcast_time))
         print(("\tRollout time = %.3f s" % rollout_time))
@@ -161,7 +173,24 @@ while is_done == 0:
         if iteration >= args.n_iter or totalsteps >= args.n_steps:
             is_done = 1
 
+
+        if args.plot:
+            if not iteration % 20:
+                ob = env.reset()
+                env.render()
+                # for i in xrange(n_timesteps):
+                for i in range(10000):
+                    a, _ = actor.sample_action_from_policy(ob)
+                    (ob, _rew, done, _info) = env.step(a.data[0,0].item())
+                    env.render()
+                    if done:
+                        print("terminated after %s timesteps" % i)
+                        break
+                    time.sleep(.001)
+
     is_done = comm.bcast(is_done, root=0)
+
 
 if rank == 0:
     print(("\n----- Evaluation complete! -----"))
+
