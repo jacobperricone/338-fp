@@ -8,6 +8,8 @@ from mpi4py import MPI
 ##############
 # MATH UTILS #
 ##############
+import os
+import shutil
 
 def discount(x, gamma):
     """
@@ -33,6 +35,19 @@ def explained_variance_1d(ypred, y):
 
 use_cuda = torch.cuda.is_available()
 
+
+
+
+def save_checkpoint(state, is_best, checkpoint='checkpoint', filename='checkpoint.pth.tar'):
+    filepath = os.path.join(checkpoint, filename)
+    if not os.path.exists(checkpoint):
+        print("Checkpoint Directory does not exist! Making directory {}".format(checkpoint))
+        os.mkdir(checkpoint)
+    else:
+        print("Checkpoint Directory exists! ")
+    torch.save(state, filepath)
+    if is_best:
+        shutil.copyfile(filepath, os.path.join(checkpoint, 'model_best.pth.tar'))
 
 
 def Variable(tensor, *args, **kwargs):

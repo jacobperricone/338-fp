@@ -34,7 +34,7 @@ parser.add_argument("--max_kl", type=float, default=.1)
 parser.add_argument("--cg_damping", type=float, default=1)
 parser.add_argument("--lam", type=float, default=0.97)
 parser.add_argument("--rollout_limit", type=str, default="episodes") # timesteps, episodes
-parser.add_argument("--value_function_lr", type=float, default=1)
+parser.add_argument("--value_function_lr", type=float, default=.001)
 parser.add_argument("--plot", type=bool, default=False)
 
 args = parser.parse_args()
@@ -84,7 +84,7 @@ totalsteps = 0
 iteration = 0
 is_done = 0
 start_time = time.time()
-
+decay = 'False'
 while is_done == 0:
     seed_iter = itertools.count()
     iteration += 1
@@ -96,6 +96,8 @@ while is_done == 0:
     actor.set_policy_weights(new_policy_weights)
     actor.set_value_function_weights(new_value_function_weights)
     bcast_time = (time.time() - bcast_start)
+
+
 
     # start worker processes collect experience for a minimum args.timesteps_per_batch timesteps
     rollout_start = time.time()
@@ -113,6 +115,11 @@ while is_done == 0:
     if rank == 0:
         # learning step
         learn_start = time.time()
+        if iteration == 150:
+            decay = 'True'
+            learner.args.max_kl = .01
+            learner.args.cg_damping = .1
+
         stats, new_policy_weights, new_value_function_weights = learner.learn(paths, policy_gradients, episodes_rewards)
         learn_time = (time.time() - learn_start)
         iteration_time = rollout_time + learn_time + gather_time + bcast_time
@@ -165,6 +172,24 @@ while is_done == 0:
         if iteration % 10 == 0:
             with open("results/%s-%d-%f-%d" % (args.task, args.timesteps_per_batch, args.max_kl, comm.Get_size()), "w") as outfile:
                 json.dump(history,outfile)
+
+        if iteration > 2:
+            if history['mean_reward'][-1] > np.max(history["mean_reward"][:-1]):
+                print("Saving New Best model")
+                checkpoint = "checkpoints/decay%s_task%s_timesteps%d_maxkl%f_comm%dvflr%d" % (decay, args.task, args.timesteps_per_batch, args.max_kl, comm.Get_size(), args.value_function_lr)
+                save_checkpoint({
+                    'epoch': iteration,
+                    'policy_dict': learner.policy_net.state_dict(),
+                    'mean_reward': history['mean_reward'][-1],
+                    'episodes': history['episodes'][-1],
+                    'delta_kl': history['delta_kl'][-1],
+                    'surrogate_loss': history['surrogate_loss'][-1],
+                    'history': history,
+                    'args': args,
+                    'value_dict': learner.value_net.state_dict()
+                }, True, checkpoint=checkpoint)
+
+
             # learner.save_weights("{}-{}-{}-{}_{}.ckpt".format(args.task, args.timesteps_per_batch, args.max_kl, comm_size, iteration))  # XXX: not implemented yet!
 
         totalsteps += stats["Timesteps"]

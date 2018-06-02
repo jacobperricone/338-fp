@@ -35,6 +35,7 @@ class TRPOActor:
         vector_to_parameters(theta, self.value_function_model.parameters())
         assert(self.value_function_model.parameters()!= old_model.parameters())
 
+
     def sample_action_from_policy(self, observation):
         observation_tensor = torch.from_numpy(observation.astype(np.float32)).unsqueeze(0)
         action_distribution = self.policy_model(Variable(observation_tensor, requires_grad=True))
