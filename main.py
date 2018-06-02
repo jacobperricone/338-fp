@@ -30,12 +30,15 @@ parser.add_argument("--timesteps_per_batch", type=int, default=10000)
 parser.add_argument("--n_steps", type=int, default=1000000000)
 parser.add_argument("--n_iter", type=int, default=250)
 parser.add_argument("--gamma", type=float, default=.995)
-parser.add_argument("--max_kl", type=float, default=.1)
-parser.add_argument("--cg_damping", type=float, default=1)
+parser.add_argument("--max_kl", type=float, default=.01)
+parser.add_argument("--cg_damping", type=float, default=.1)
 parser.add_argument("--lam", type=float, default=0.97)
 parser.add_argument("--rollout_limit", type=str, default="episodes") # timesteps, episodes
 parser.add_argument("--value_function_lr", type=float, default=1)
 parser.add_argument("--plot", type=bool, default=False)
+parser.add_argument("--decay", type=bool, default=False)
+parser.add_argument("--timestep_adapt", type=float, default=1000)
+parser.add_argument("--kl_adapt", type=float, default=.005)
 
 args = parser.parse_args()
 args.max_pathlength = gym.spec(args.task).timestep_limit
@@ -84,10 +87,12 @@ totalsteps = 0
 iteration = 0
 is_done = 0
 start_time = time.time()
-
+broadcast_update = False
 while is_done == 0:
     seed_iter = itertools.count()
     iteration += 1
+
+
 
     # synchronize policy and vf model parameters and update actor weights locally
     bcast_start = time.time()
@@ -96,6 +101,12 @@ while is_done == 0:
     actor.set_policy_weights(new_policy_weights)
     actor.set_value_function_weights(new_value_function_weights)
     bcast_time = (time.time() - bcast_start)
+
+    if broadcast_update:
+        val = comm.bcast(args.max_kl, root=0)  # this modifies in place the numpy container for the weights
+        print(val)
+        actor.set_kl(val)
+
 
     # start worker processes collect experience for a minimum args.timesteps_per_batch timesteps
     rollout_start = time.time()
@@ -143,7 +154,7 @@ while is_done == 0:
         ep = 0
         it = iteration-1
         rew = 0
-        while ep < 100 and it >= 0:
+        while ep < 10 and it >= 0:
             ep += history['episodes'][it]
             rew += history['mean_reward'][it]*history['episodes'][it]
             it -= 1
@@ -163,7 +174,7 @@ while is_done == 0:
         print(("\tTotal iteration time = %.3f s" % np.mean(history["iteration_time"])))
 
         if iteration % 10 == 0:
-            with open("results/%s-%d-%f-%d" % (args.task, args.timesteps_per_batch, args.max_kl, comm.Get_size()), "w") as outfile:
+            with open("results/%s-%d-%f-%d" % (args.task, args.timesteps_per_batch, args.max_kl, comm.Get_size()), "a") as outfile:
                 json.dump(history,outfile)
             # learner.save_weights("{}-{}-{}-{}_{}.ckpt".format(args.task, args.timesteps_per_batch, args.max_kl, comm_size, iteration))  # XXX: not implemented yet!
 
@@ -173,7 +184,6 @@ while is_done == 0:
         if iteration >= args.n_iter or totalsteps >= args.n_steps:
             is_done = 1
 
-
         if args.plot:
             if not iteration % 20:
                 ob = env.reset()
@@ -181,12 +191,34 @@ while is_done == 0:
                 # for i in xrange(n_timesteps):
                 for i in range(10000):
                     a, _ = actor.sample_action_from_policy(ob)
-                    (ob, _rew, done, _info) = env.step(a.data[0,0].item())
+                    (ob, _rew, done, _info) = env.step(a.data[0, 0].item())
                     env.render()
                     if done:
                         print("terminated after %s timesteps" % i)
                         break
                     time.sleep(.001)
+
+        if args.decay:
+            if iteration > 80 and iteration % 25 == 0:
+                past_ten = [history['mean_reward'][-x] for x in range(2, 10)]
+                avg = sum(past_ten)/len(past_ten)
+                if history['mean_reward'][-1] <avg:
+                    print("Policy is not improving. Decrease KL and increase steps.")
+                    if args.timesteps_per_batch < 20000:
+                        args.timesteps_per_batch += args.timestep_adapt
+
+                    if actor.args.max_kl > 0.001:
+                        args.max_kl -= args.kl_adapt
+                else:
+                    print("Policy is improving. Increase KL and decrease steps.")
+                    if args.timesteps_per_batch > 1200:
+                        args.timesteps_per_batch -= args.timestep_adapt
+                    if args.max_kl < 0.01:
+                        args.max_kl += args.kl_adapt
+
+
+                broadcast_update = True
+
 
     is_done = comm.bcast(is_done, root=0)
 

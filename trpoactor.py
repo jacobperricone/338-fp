@@ -42,6 +42,10 @@ class TRPOActor:
         action = m.sample().unsqueeze(0)
         return action, action_distribution,m
 
+    def set_kl(self, kl):
+        print("new kl is {}".format(kl))
+        self.args.max_kl = kl
+
     def sample_episode(self, num_timesteps=sys.maxsize):
         observations, actions, rewards, action_distributions = [], [], [], []
         observation = self.env.reset()
@@ -49,9 +53,6 @@ class TRPOActor:
             observation = self.ob_filter(observation)
             observations.append(observation)
             action, action_distribution, m = self.sample_action_from_policy(observation)
-            # print(action.data[0,0])
-            # print(action, action_distribution)
-            # print(action, action_distribution)
             actions.append(action)
             action_distributions.append(action_distribution)
             # entropy += -(action_dist * action_dist.log()).sum()
@@ -70,9 +71,6 @@ class TRPOActor:
                 delta = rewards + self.args.gamma * baseline[1:] - baseline[:-1]
                 advantage = torch.from_numpy(np.expand_dims(discount(delta, self.args.gamma * self.args.lam), -1).astype(np.float32).copy())
                 path = [features, torch.cat([item for item in actions]), returns, advantage]
-                # delta = discount(rewards, self.args.gamma*self.args.lam)  - baseline[:-1]
-                # advantage = torch.from_numpy(np.expand_dims(delta.astype(np.float32).copy(),-1))
-                # path = [features, torch.cat([item for item in actions]), returns, advantage]
                 return path, torch.cat([item for item in action_distributions]), rewards.sum()
 
     # Need to calculate policy gradient here, because we need to use the forward passes through the policy

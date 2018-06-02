@@ -48,7 +48,7 @@ class DQNSoftmax(nn.Module):
 
         self.observation_size = input_size
         self.action_size = output_size
-        self.hidden_size = 128
+        self.hidden_size = 64
         self.h1 = nn.Linear(self.observation_size, self.hidden_size)
         self.h2 = nn.Linear(self.hidden_size, self.hidden_size)
         self.h3 = nn.Linear(self.hidden_size, self.action_size)
